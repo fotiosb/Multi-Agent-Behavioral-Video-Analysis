@@ -1,0 +1,6 @@
+venv/ 
+.env 
+*.pt 
+__pycache__/ 
+snapshots/ 
+events.db 
