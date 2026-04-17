@@ -188,7 +188,6 @@ function SettingsPanel({ onZoneSetup, onConfigSaved }) {
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-    // Notify parent of source change so Live tab updates
     if (onConfigSaved) onConfigSaved(cfg.SOURCE || "");
   };
 
@@ -383,63 +382,107 @@ function LivePanel({ data, activeAlert, setActiveAlertIndex, activeAlertIndex, c
             </div>
           </div>
 
-          <div className="video-stage">
-            <div className="scan-frame">
+          {/* ── FIXED VIDEO SECTION ── */}
+          <div className="video-stage" style={{ position: "relative" }}>
+            {/* Fixed aspect-ratio container – prevents cropping + layout shift */}
+            <div 
+              className="scan-frame"
+              style={{
+                position: "relative",
+                width: "100%",
+                aspectRatio: "16 / 9",           // ← change to "4 / 3" if your stream is 4:3
+                background: "#0a172b",
+                borderRadius: "12px",
+                overflow: "hidden",
+                minHeight: "380px",              // fallback for narrow viewports
+              }}
+            >
               {running ? (
                 <img
                   src={`${API}/api/stream`}
-                  style={{ width:"100%",height:"100%",objectFit:"contain",borderRadius:"inherit",display:"block" }}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain",
+                    display: "block",
+                  }}
                   alt="Live stream"
                 />
               ) : (
-                <div style={{ display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:"var(--muted)",flexDirection:"column",gap:8 }}>
-                  <span style={{fontSize:32}}>◉</span>
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  height: "100%",
+                  color: "var(--muted)",
+                  flexDirection: "column",
+                  gap: 8,
+                }}>
+                  <span style={{ fontSize: 32 }}>◉</span>
                   <span>Press Start to begin detection</span>
                 </div>
               )}
+
+              {/* Risk badge stays on top of video */}
               {lastClaude?.detected && (
-                <div style={{position:"absolute",bottom:12,right:12,zIndex:2}}>
-                  <div className={`risk-badge ${lastClaude.confidence==="high"?"high":"medium"}`}>
-                    {(lastClaude.anomaly_type||"anomaly").replace(/_/g," ")}
+                <div style={{ position: "absolute", bottom: 12, right: 12, zIndex: 2 }}>
+                  <div className={`risk-badge ${lastClaude.confidence === "high" ? "high" : "medium"}`}>
+                    {(lastClaude.anomaly_type || "anomaly").replace(/_/g, " ")}
                   </div>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Progress bar — file mode only, shown below video, not overlapping */}
-          {progress && !source.toLowerCase().startsWith("rtsp") && (
+          {/* Progress bar – always rendered with reserved height → no layout shift */}
+          {source && !source.toLowerCase().startsWith("rtsp") && (
             <div style={{
-              padding:"8px 16px", background:"rgba(10,23,43,0.9)",
-              borderTop:"1px solid var(--line)", display:"flex", alignItems:"center", gap:12,
+              padding: "8px 16px",
+              background: "rgba(10,23,43,0.9)",
+              borderTop: "1px solid var(--line)",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              minHeight: "52px",               // ← reserves space even when hidden
+              opacity: progress && !playbackFinished ? 1 : 0.3,
             }}>
-              <span style={{fontSize:12,color:"var(--muted)",minWidth:110,fontFamily:"var(--font-mono)"}}>
+              <span style={{ fontSize: 12, color: "var(--muted)", minWidth: 110, fontFamily: "var(--font-mono)" }}>
                 {playbackFinished
                   ? "00:00 / 00:00"
-                  : `${String(Math.floor(progress.current/60)).padStart(2,"0")}:${String(progress.current%60).padStart(2,"0")} / ${String(Math.floor(progress.total/60)).padStart(2,"0")}:${String(progress.total%60).padStart(2,"0")}`
-                }
+                  : `${String(Math.floor((progress?.current || 0) / 60)).padStart(2, "0")}:${String((progress?.current || 0) % 60).padStart(2, "0")} / ${String(Math.floor((progress?.total || 0) / 60)).padStart(2, "0")}:${String((progress?.total || 0) % 60).padStart(2, "0")}`}
               </span>
-              <div style={{flex:1,height:4,background:"rgba(148,163,184,0.15)",borderRadius:999,overflow:"hidden"}}>
+              <div style={{ flex: 1, height: 4, background: "rgba(148,163,184,0.15)", borderRadius: 999, overflow: "hidden" }}>
                 <div style={{
-                  width:`${playbackFinished ? 0 : progress.pct}%`,
-                  height:"100%", background:"var(--brand)",
-                  borderRadius:999, transition:"width 0.5s linear",
-                }}/>
+                  width: `${playbackFinished ? 0 : (progress?.pct || 0)}%`,
+                  height: "100%",
+                  background: "var(--brand)",
+                  borderRadius: 999,
+                  transition: "width 0.5s linear",
+                }} />
               </div>
-              <span style={{fontSize:12,color:"var(--muted)",minWidth:36,textAlign:"right"}}>
-                {playbackFinished ? "0%" : `${progress.pct}%`}
+              <span style={{ fontSize: 12, color: "var(--muted)", minWidth: 36, textAlign: "right" }}>
+                {playbackFinished ? "0%" : `${progress?.pct || 0}%`}
               </span>
             </div>
           )}
 
-          {/* Status bar */}
+          {/* Claude status bar – always rendered with reserved height → no layout shift */}
           {lastClaude && (
-            <div style={{ padding:"12px 16px",background:"rgba(14,31,58,0.6)",borderTop:"1px solid var(--line)",
-                          borderBottomLeftRadius:20,borderBottomRightRadius:20,fontSize:13 }}>
-              <span style={{color:alertColor,fontWeight:600}}>
-                {lastClaude.detected ? `⚠ ${(lastClaude.anomaly_type||"").replace(/_/g," ").toUpperCase()} [${lastClaude.confidence}]` : "✓ No anomaly"}
+            <div style={{
+              padding: "12px 16px",
+              background: "rgba(14,31,58,0.6)",
+              borderTop: "1px solid var(--line)",
+              borderBottomLeftRadius: 20,
+              borderBottomRightRadius: 20,
+              fontSize: 13,
+              minHeight: "58px",               // ← reserves space
+            }}>
+              <span style={{ color: alertColor, fontWeight: 600 }}>
+                {lastClaude.detected 
+                  ? `⚠ ${(lastClaude.anomaly_type || "").replace(/_/g, " ").toUpperCase()} [${lastClaude.confidence}]` 
+                  : "✓ No anomaly"}
               </span>
-              <span style={{color:"var(--muted)",marginLeft:8}}>{lastClaude.reason}</span>
+              <span style={{ color: "var(--muted)", marginLeft: 8 }}>{lastClaude.reason}</span>
             </div>
           )}
         </div>
