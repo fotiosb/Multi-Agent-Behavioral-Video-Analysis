@@ -33,9 +33,9 @@ def draw_overlay(frame, pts):
 
 
 def main():
-    rtsp_url = os.getenv("RTSP_URL")
+    rtsp_url = os.getenv("SOURCE")
     if not rtsp_url:
-        print("ERROR: RTSP_URL not set in .env file.")
+        print("ERROR: SOURCE not set in .env file.")
         return
 
     print(f"Connecting to: {rtsp_url}")

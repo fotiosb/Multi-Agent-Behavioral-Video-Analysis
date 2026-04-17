@@ -1,202 +1,323 @@
-# Multi-Agent Behavioral Video Analysis
+# SentinelIQ — Multi-Agent Behavioral Video Analysis
 
-An AI-powered video analytics system that detects and evaluates human behavior in defined zones using a three-layer intelligence architecture. Built as a focused MVP/POC, it combines local computer vision with cloud AI to deliver high-confidence behavioral detection with minimal false positives.
+An AI-powered surveillance anomaly detection system using a three-layer intelligence architecture: local YOLO person detection, Gemini Flash first-pass filter, and Claude deep semantic judgment. Includes a full web GUI built with React and FastAPI.
 
 ---
 
-## How it works
-
-Most video analytics systems fire an alert every time any person enters a zone. This system fires an alert when a person enters a zone **and their behavior matches what you actually care about** — described in plain English, with tolerance for ambiguity.
-
-The difference between a janitor and an intruder. Between someone pausing to check their phone and someone casing the room.
-
-This is achieved through three AI layers working in sequence:
+## Architecture
 
 ```
-RTSP Stream
-    │
-    ▼
+Video source (RTSP stream or local file)
+        │
+        ▼
 ┌─────────────────────────────────────────┐
-│  Layer 1 — YOLO  (local, always-on)     │
-│  Detects persons in the defined zone.   │
-│  Gates all downstream processing.       │
+│  Layer 1 — YOLOv8m  (local, always-on)  │
+│  Detects persons, tracks zone entry/exit │
 │  Cost: local compute only               │
-└────────────────────┬────────────────────┘
-                     │ person confirmed in zone
-                     ▼
+└──────────────────┬──────────────────────┘
+                   │ person confirmed in zone
+                   ▼
 ┌─────────────────────────────────────────┐
 │  Layer 2 — Gemini Flash                 │
-│  Analyses a sequence of frames for      │
-│  temporal context and motion patterns.  │
-│  Returns: clear_no / maybe / likely     │
+│  Receives 8 keyframes, returns:         │
+│  clear_no / maybe / likely + description│
 │  Cost: ~$16/month per camera            │
-└────────────────────┬────────────────────┘
-                     │ maybe or likely
-                     ▼
+└──────────────────┬──────────────────────┘
+                   │ maybe or likely
+                   ▼
 ┌─────────────────────────────────────────┐
-│  Layer 3 — Claude                       │
-│  Deep semantic judgment on sampled      │
-│  frames + Gemini's description.         │
-│  Returns: detected, confidence, reason  │
+│  Layer 3 — Claude Sonnet                │
+│  Receives up to 20 frames (biased       │
+│  sample: half spread, half from end).   │
+│  Returns: detected, confidence,         │
+│  anomaly_type, reason (JSON)            │
 │  Cost: ~$45/month per camera            │
-└────────────────────┬────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────┐
-│  Alert Layer                            │
-│  low confidence  → log only             │
-│  medium/high     → console alert        │
-│                  + snapshot saved       │
-│  All events      → SQLite database      │
 └─────────────────────────────────────────┘
+        Total API cost: ~$60/month per camera
 ```
 
-**Total estimated API cost: ~$60/month per camera**
+### Key design decisions
+
+**Why three layers?** YOLO alone fires on presence, not behaviour. A single AI layer on every frame would be expensive and slow. The three-layer architecture gates API calls aggressively — Gemini only activates after a person has dwelled in the zone, Claude only activates when Gemini flags something worth a second opinion.
+
+**Why keyframes instead of Gemini Live streaming?** For this MVP, Gemini receives evenly-sampled frames rather than a WebSocket stream. This works identically for both local files and RTSP streams, is significantly simpler, and produces equivalent detection quality for the target behaviours.
+
+**Why biased Claude frame sampling?** With a large buffer (e.g. 900 frames), pure even sampling may miss a fire or explosion that appears in the final seconds. Claude receives half its frames evenly spread (for context) and half from the final quarter of the buffer (for consequences), ensuring post-departure events are always represented.
+
+**Threaded capture:** YOLO inference on CPU takes longer than the RTSP frame interval. Without a dedicated capture thread the main loop would block on network I/O, causing stream timeouts. `StreamCapture` reads frames in a background thread; the detection loop always has a fresh frame without waiting on the network.
+
+**Post-exit frame buffer:** When a person leaves the monitored zone, the system continues capturing frames for a configurable period (`POST_EXIT_BUFFER_SECONDS`, default 20s). These frames are appended to the person's buffer before the exit analysis fires. In file mode, post-exit frames are collected until the end of the file. This allows detection of consequences — fire from arson, a person left on the ground — that appear after the subject has departed.
+
+**Automatic Gemini failover:** After `GEMINI_AUTO_DISABLE_AFTER` consecutive failures (default 3), Gemini is automatically disabled for `GEMINI_COOLDOWN_MINUTES` (default 10). During this period Claude acts as sole analyst using a full-length prompt and up to 20 frames. Gemini re-enables automatically after the cooldown.
 
 ---
 
-## Tech stack
+## Anomaly types detected
 
-| Component | Technology |
+| Category | Types |
 |---|---|
-| Stream capture | OpenCV `VideoCapture` (RTSP + local files) |
-| Person detection | YOLOv8n (Ultralytics) |
-| Zone logic | OpenCV polygon intersection |
-| Temporal analysis | Gemini Flash (`generate_content` with keyframes) |
-| Semantic judgment | Claude Haiku / Sonnet |
-| Event storage | SQLite |
-| Configuration | `.env` + `config.json` |
+| Violence | assault, fighting, abuse |
+| Weapons | weapon (firearm, blade, blunt object) |
+| Criminal | robbery, burglary, theft, shoplifting, vandalism |
+| Fire | arson, fire |
+| Distress | person_down, distress |
+| Suspicious | loitering, suspicious_behaviour |
+| Access | intrusion, tailgating |
+| Other | abandoned_object, crowd_anomaly, other |
 
 ---
 
-## Project status
+## Project structure
 
-This project is being built milestone by milestone. Each milestone delivers working, demonstrable functionality.
-
-| Milestone | Description | Status |
-|---|---|---|
-| 1 | RTSP capture, click-to-define zone, YOLO person detection | ✅ Complete |
-| 2 | Gemini Flash integration — frame buffer, keyframe analysis, verdict + description | 🔲 Upcoming |
-| 3 | Claude integration — structured JSON judgment, full two-AI reasoning chain | 🔲 Upcoming |
-| 4 | Alert tiering, SQLite event log, snapshot saving, event viewer | 🔲 Upcoming |
-| 5 | RTSP live testing, bug fixes, documentation and handover | 🔲 Upcoming |
+```
+video-analytics/
+├── main.py                  Standalone detector (OpenCV window, CLI only)
+├── zone_setup.py            CLI zone definition tool (OpenCV window)
+├── .env                     Active configuration (create from .env.example)
+├── .env.example             Configuration template
+├── config.json              Zone polygon (written by zone setup tool or GUI)
+├── README.md
+├── requirements.txt         Python deps for standalone CLI mode
+├── start.bat                Windows: launches backend + frontend together
+│
+├── backend/                 FastAPI backend (GUI mode)
+│   ├── requirements.txt
+│   └── app/
+│       ├── main.py          REST API, MJPEG stream, WebSocket events
+│       ├── detector_process.py  Full detector running in a background thread
+│       └── data.py          Mock dashboard data (review/health/insights tabs)
+│
+└── frontend/                React + Vite web UI
+    ├── package.json
+    ├── vite.config.js
+    ├── index.html
+    └── src/
+        ├── App.jsx          Full integrated UI
+        ├── main.jsx         React entry point
+        └── styles.css       SentinelIQ design system
+```
 
 ---
 
-## Requirements
+## Prerequisites
 
-- Python 3.11
-- A camera exposing an RTSP stream, or a local `.mp4` video file
-- Anthropic API key (Milestone 3+)
-- Google Gemini API key (Milestone 2+)
+### All platforms
+- **Python 3.11** (not 3.12+ — ultralytics and some OpenCV builds have compatibility issues)
+- **Node.js 18+** and **npm** (for the React frontend)
+- **Gemini API key** — from [Google AI Studio](https://aistudio.google.com)
+- **Anthropic API key** — from [Anthropic Console](https://console.anthropic.com)
+
+### Windows-specific
+- Python 3.11 from [python.org](https://www.python.org/downloads/release/python-3119/) — use the 64-bit installer
+- During install: check **"Add Python to PATH"** only if you want it as system default. For a clean install alongside other Python versions, use the Python Launcher (`py -3.11`)
+- Node.js from [nodejs.org](https://nodejs.org) — LTS version recommended
+
+### Linux-specific
+- `sudo apt install python3.11 python3.11-venv python3-pip` (Ubuntu/Debian)
+- `sudo apt install nodejs npm`
+- For OpenCV camera access: `sudo apt install libgl1-mesa-glx libglib2.0-0`
 
 ---
 
 ## Installation
 
-**1. Clone the repository:**
+### Step 1 — Clone the repository
 ```bash
 git clone https://github.com/fotiosb/Multi-Agent-Behavioral-Video-Analysis.git
 cd Multi-Agent-Behavioral-Video-Analysis
 ```
 
-**2. Create and activate a Python 3.11 virtual environment:**
+### Step 2 — Create a Python 3.11 virtual environment
 
-On Windows:
-```bash
+**Windows:**
+```bat
 py -3.11 -m venv venv
 venv\Scripts\activate
 ```
 
-On macOS/Linux:
+**Linux/macOS:**
 ```bash
 python3.11 -m venv venv
 source venv/bin/activate
 ```
 
-**3. Install dependencies:**
+### Step 3 — Install Python dependencies
+
+**Standalone CLI mode only:**
 ```bash
 pip install --upgrade pip
-pip install opencv-python ultralytics python-dotenv
+pip install opencv-python ultralytics python-dotenv google-genai anthropic
 ```
 
-**4. Create your `.env` file:**
+**GUI mode (includes everything above plus FastAPI):**
+```bash
+pip install --upgrade pip
+pip install opencv-python ultralytics python-dotenv google-genai anthropic
+pip install fastapi "uvicorn[standard]" python-multipart
 ```
-RTSP_URL=rtsp://your-camera-ip:port/stream
-ANTHROPIC_API_KEY=your_key_here      # required from Milestone 3
-GEMINI_API_KEY=your_key_here         # required from Milestone 2
+
+> `yolov8m.pt` (~52 MB) downloads automatically on first run.
+
+### Step 4 — Install frontend dependencies
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### Step 5 — Configure
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+# Windows
+copy .env.example .env
+
+# Linux/macOS
+cp .env.example .env
+```
+
+Minimum required values:
+```
+SOURCE=rtsp://your-camera-ip:port/stream
+GEMINI_API_KEY=your_gemini_key_here
+ANTHROPIC_API_KEY=your_anthropic_key_here
+```
+
+For local file testing:
+```
+SOURCE=C:\Users\YourName\Videos\test.mp4   # Windows
+SOURCE=/home/yourname/videos/test.mp4      # Linux
 ```
 
 ---
 
-## Usage
+## Running — GUI mode (recommended)
 
-### Step 1 — Define your zone
+### Windows
+Double-click `start.bat`, or run manually in two terminals:
 
-Run the zone setup tool. It will open a window showing the first frame of your stream. Click to place polygon points around the area you want to monitor, then press `Enter` to confirm. The zone is saved to `config.json`.
+```bat
+:: Terminal 1 — backend
+venv\Scripts\activate
+uvicorn backend.app.main:app --reload --port 8000
 
-```bash
-python zone_setup.py
+:: Terminal 2 — frontend
+cd frontend
+npm run dev
 ```
 
-**Controls:**
-- `Left-click` — place a point
-- `R` — reset all points
-- `Enter` — confirm and save (minimum 3 points required)
-- `Q` — quit without saving
+### Linux/macOS
+```bash
+# Terminal 1 — backend
+source venv/bin/activate
+uvicorn backend.app.main:app --reload --port 8000
 
-> **Note:** Click on the video window first to give it keyboard focus before using keyboard shortcuts.
+# Terminal 2 — frontend
+cd frontend
+npm run dev
+```
 
-### Step 2 — Start detection
+Open **http://localhost:5173** in your browser.
 
+---
+
+## Running — Standalone CLI mode
+
+### Define the zone (first time only)
+```bash
+# Windows
+venv\Scripts\activate
+python zone_setup.py
+
+# Linux/macOS
+source venv/bin/activate
+python zone_setup.py
+```
+A window opens showing the first frame of your source. Click at least 3 points to define the monitoring polygon. Press `Enter` to save to `config.json`. Press `Q` to quit without saving.
+
+> **Note (Windows):** Click on the OpenCV window to give it keyboard focus before pressing Enter or Q.
+
+### Run the detector
 ```bash
 python main.py
 ```
-
-The annotated video feed opens in a window. The defined zone is shown as a green polygon. Detected persons outside the zone are shown with grey bounding boxes. Persons inside the zone are shown in green with a live dwell timer.
-
-Press `Q` (with the video window focused) to stop.
+Press `Q` in the video window (with the window focused) to stop.
 
 ---
 
-## Configuration
+## GUI walkthrough
 
-Edit `config.json` to adjust the zone polygon (auto-generated by `zone_setup.py`).
+### Settings tab
+- Edit all configuration values: source URL, tuning parameters
+- Click **Save** to write values to `.env`
+- Click **Define zone** to open the zone editor
 
-The following constants can be adjusted at the top of `main.py`:
+> API keys are managed directly in `.env` and are not exposed in the GUI.
 
-| Constant | Default | Description |
+### Live Monitoring tab
+1. Click **Edit zone** (or **Define zone**) — the zone editor opens on the first frame of your source. Click to place polygon points (minimum 3), then click **Save zone**
+2. Click **▶ Start** — the annotated video feed appears as a live stream
+3. The **Event Log** updates in real time showing: zone entries/exits, Gemini verdicts, Claude judgments with confidence and reason
+4. When an anomaly is confirmed at high or medium confidence, the zone overlay turns red and a badge appears
+5. For file sources: a progress bar shows playback position below the video. It resets to zero when you stop and replay
+6. The panel header shows **"Live Feed"** for RTSP sources and **"Video File"** for local files
+7. Click **■ Stop** to halt detection
+
+### Other tabs
+Review, Camera Health, Model Insights — show mock dashboard data. Real integration is a future milestone.
+
+---
+
+## Configuration reference
+
+All values can be set in `.env` or via the GUI Settings tab.
+
+| Key | Default | Description |
 |---|---|---|
-| `YOLO_CONFIDENCE` | `0.5` | Minimum confidence threshold for person detection |
-| `DWELL_SECONDS` | `2.0` | Seconds a person must be in the zone before AI analysis is triggered |
+| `SOURCE` | — | RTSP URL or local video file path |
+| `GEMINI_API_KEY` | — | Google Gemini API key |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key |
+| `YOLO_CONFIDENCE` | `0.5` | Minimum confidence for person detection (0–1) |
+| `DWELL_SECONDS` | `2.0` | Seconds in zone before interval analysis fires |
+| `GEMINI_INTERVAL_SECONDS` | `5.0` | How often Gemini re-analyses during extended stays |
+| `GEMINI_KEYFRAMES` | `8` | Number of frames sent to Gemini per call |
+| `CLAUDE_FRAMES_DIRECT` | `20` | Max frames sent to Claude per call |
+| `ZONE_ENTRY_GRACE_SECONDS` | `0.3` | Continuous presence required before zone entry is confirmed |
+| `ZONE_EXIT_GRACE_SECONDS` | `3.0` | Continuous absence required before zone exit is confirmed |
+| `POST_EXIT_BUFFER_SECONDS` | `20.0` | Seconds of post-departure frames captured before exit analysis (stream mode) |
+| `TRACKER_MATCH_DIST` | `120` | Max pixel distance to match a detection to an existing tracker |
+| `GEMINI_AUTO_DISABLE_AFTER` | `3` | Consecutive Gemini failures before auto-disable |
+| `GEMINI_COOLDOWN_MINUTES` | `10` | Minutes Gemini stays disabled after auto-disable |
 
 ---
 
-## Stream compatibility
+## Troubleshooting
 
-`cv2.VideoCapture` works identically for both RTSP streams and local video files. To test with a local file, set your `.env` to:
+**`ValueError: invalid literal for int() with base 10: '10.0'`**
+Your `.env` has a float value where an integer is expected (e.g. `GEMINI_COOLDOWN_MINUTES=10.0`). Change it to `10`.
 
+**`yolov8m.pt` download fails**
+The model downloads from Ultralytics on first run. If your network blocks it, manually download from https://github.com/ultralytics/assets/releases and place in the project root.
+
+**Stream timeouts on RTSP**
+Normal on hotspot/mobile connections. The threaded capture handles reconnection automatically. If timeouts are frequent, try reducing `GEMINI_INTERVAL_SECONDS` to reduce CPU load during YOLO inference.
+
+**"No source configured" in Live tab after saving settings**
+Restart the backend (`Ctrl+C` and re-run `uvicorn`). The `.env` is read at startup; changes take effect on next start.
+
+**Port already in use**
+```bash
+# Windows — find and kill process on port 8000
+netstat -ano | findstr :8000
+taskkill /PID <pid> /F
 ```
-RTSP_URL=path\to\your\video.mp4
-```
 
-No other changes required.
-
----
-
-## Design decisions
-
-**Why three AI layers instead of one?**
-YOLO alone fires on presence, not behavior. A single AI layer (e.g. Claude directly on every frame) would be expensive and slow. The three-layer architecture gates API calls aggressively — Gemini only activates when YOLO confirms a person has dwelled in the zone, and Claude only activates when Gemini flags something worth a second opinion. This keeps costs low while preserving sensitivity to genuinely ambiguous situations.
-
-**Why keyframes instead of the Gemini Live streaming API?**
-For this MVP, Gemini receives a buffer of evenly-sampled frames rather than a live WebSocket stream. This approach works identically for both local video files and RTSP streams, is significantly simpler to implement, and produces equivalent detection quality for the behavioral patterns this system targets. The Live API is a defined future upgrade path for sub-second latency requirements.
-
-**Why threaded capture?**
-YOLO inference on CPU takes longer than the interval between RTSP frames. Without a dedicated capture thread, the main loop blocks on network I/O waiting for the next frame while YOLO is still processing the previous one, causing buffer starvation and stream timeouts. The `StreamCapture` class runs frame reading in a background thread so the network and the inference pipeline never block each other.
+**OpenCV window not responding to keys (Windows)**
+Click directly on the OpenCV window title bar to give it focus, then press keys.
 
 ---
 
 ## License
 
-MIT
+PROPRIETARY

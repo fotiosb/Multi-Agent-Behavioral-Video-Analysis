@@ -78,9 +78,9 @@ async def mjpeg_generator():
                 jpeg = det.frame_queue.get_nowait()
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
             else:
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.005)
         except Exception:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
 
 @app.get("/api/stream")
 async def video_stream():
@@ -96,10 +96,10 @@ class StartRequest(BaseModel):
 
 @app.post("/api/detector/start")
 def detector_start(req: StartRequest):
+    if det.is_running():
+        return {"started": False, "reason": "already running"}
     zone = [tuple(p) for p in req.zone_points] if req.zone_points else None
-    ok = det.start(zone_points=zone)
-    if not ok:
-        raise HTTPException(400, "Detector already running")
+    det.start(zone_points=zone)
     return {"started": True}
 
 @app.post("/api/detector/stop")
@@ -185,7 +185,7 @@ async def ws_events(websocket: WebSocket):
         # Send current status immediately on connect
         await websocket.send_json({"type": "status", **det.get_status()})
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
             await websocket.send_json({"type": "status", **det.get_status()})
     except WebSocketDisconnect:
         manager.disconnect(websocket)

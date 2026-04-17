@@ -3,4 +3,5 @@ venv/
 *.pt 
 __pycache__/ 
 snapshots/ 
-events.db 
+events.db
+frontend/node_modules/
