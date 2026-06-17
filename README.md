@@ -320,4 +320,4 @@ Click directly on the OpenCV window title bar to give it focus, then press keys.
 
 ## License
 
-PROPRIETARY
+MIT
